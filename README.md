@@ -8,7 +8,7 @@ The Robot Navigation System is designed to enable a robot to move through a 2D g
 ## Key Features
 
 1. **A* Pathfinding Algorithm:**
-   - The system uses the **A* (A-star) algorithm** to find the shortest path between the robot's current position and the target. This widely used algorithm evaluates the cost of moving from the start to the goal, factoring in the distance traveled (`g_score`) and a heuristic estimate of the remaining distance (`h_score`), combining them into an `f_score`. The robot follows the path with the lowest total cost.
+   - The system uses the **A-star algorithm** to find the shortest path between the robot's current position and the target. This widely used algorithm evaluates the cost of moving from the start to the goal, factoring in the distance traveled (`g_score`) and a heuristic estimate of the remaining distance (`h_score`), combining them into an `f_score`. The robot follows the path with the lowest total cost.
    
 2. **Hierarchical Pathfinding Abstraction:**
    - In addition to A*, the system employs a **Hierarchical Pathfinding** abstraction, which divides the map into smaller, hierarchical zones for more efficient pathfinding. Instead of calculating paths at the grid level, the system first calculates paths at a higher level (across zones or regions). Then, it refines the path at the grid level within these zones, which improves performance for large environments. This abstraction helps in dealing with larger maps and more complex scenarios by simplifying the pathfinding problem.
