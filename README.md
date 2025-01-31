@@ -2,6 +2,7 @@
 
 ## Overview
 
+This is a project developed for the UNIMI course: "Progettazione di sistemi operativi" 
 The Robot Navigation System is designed to enable a robot to move through a 2D grid environment while avoiding obstacles and respecting boundaries. The system provides precise control over the robot's movement, including the calculation of steps and rotation required to reach a target point.
 
 ## Key Features
