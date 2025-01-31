@@ -2,7 +2,7 @@
  * mapOperations.h
  *
  *  Created on: Oct 18, 2024
- *      Author: dboer
+ *      Author: daniele-boerio
  */
 
 #include "stm32f4xx_hal.h"
@@ -15,21 +15,13 @@
 #ifndef SRC_MAPOPERATIONS_H_
 #define SRC_MAPOPERATIONS_H_
 
-#define MAX_POINTS 100 						//massimo numero di vertici del poligono
-#define MAX_BOUNDARIES 961 					//massimo numero di celle per dividere il poligono che il sistema può sostenere
-
-//Constants for save and load from flash memory
-#define FLASH_USER_START_ADDR   0x08040000  // Indirizzo del settore 6 della Flash
-#define START_CONTROL_VALUE -1000			// Valore iniziale per lo storage dei punti in memoria
-#define END_CONTROL_VALUE 1000				// Valore finale per lo storage dei punti in memoria
+#define MAX_POINTS 100 						// max number of vertices in the polygon
+#define MAX_BOUNDARIES 961 					// max number of cell in the polygon
 
 
 #define DIAMETRO_RUOTA 68					//68 mm
-#define DISTANZA_RUOTE 320.635				//320 mm circa
-#define PASSI_PER_GIRO_RUOTA 3200			//numero di passi per fare un giro intero della ruota
-
-
-#define EPSILON 1e-9 // Tolleranza per confronti
+#define DISTANZA_RUOTE 320.635				//320 mm
+#define PASSI_PER_GIRO_RUOTA 3200			// number of steps to do a full rotation of each weel
 
 
 typedef struct {
@@ -38,13 +30,13 @@ typedef struct {
 } Point;
 
 
-// Nodo per rappresentare ogni punto esplorato
+// a node represent a cell in the polygon
 typedef struct Node {
 	int8_t row;
 	int8_t column;
 	bool isBoundary;
-	bool isObstacle;     // 1 se la cella è un ostacolo, 0 altrimenti
-	bool isValid;     // 1 se la cella è valida, 0 altrimenti
+	bool isObstacle;     	// 1 if the cell is an obstacle, 0 otherwise
+	bool isValid;     		// 1 if the cell is valid, 0 otherwise
 	int8_t direction;
     double f_score;
     double h_score;
@@ -52,12 +44,13 @@ typedef struct Node {
     struct Node* parent;
 } Node;
 
-// Implementazione della coda di priorità semplice (per esempio, una lista non ordinata da migliorare con un heap)
+// priority queue
 typedef struct {
     Node* nodes[MAX_BOUNDARIES];
     int size;
 } PriorityQueue;
 
+// visited list
 typedef struct {
     Node* nodes[MAX_BOUNDARIES];
     int size;
@@ -65,27 +58,15 @@ typedef struct {
 
 extern Point boundaries[MAX_POINTS];
 extern uint8_t boundary_count;
-extern UART_HandleTypeDef huart6;  // Dichiara huart6 come esterna
-extern Point current_position;  // Dichiarazione della posizione corrente
-extern double current_angle;    // Angolo attuale della macchina (in radianti)
+extern UART_HandleTypeDef huart6;
+extern Point current_position;
+extern double current_angle;
 extern double cellSize;
 extern long minY;
 extern long minX;
 extern Node** nodes;
 extern uint8_t rows;
 extern uint8_t cols;
-
-
-void save_polygon_to_flash(void);
-void erase_polygon(void);
-bool load_polygon_from_flash(void);
-void add_boundary_point(long, long);
-void transmit_coordinates(long, long);
-
-void add_forward(unsigned long);
-void add_backward(unsigned long);
-void add_right(double);
-void add_left(double);
 
 long calcolaNumeroPassiRotazione(double);
 double calcolaAngoloRotazione(unsigned long);

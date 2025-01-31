@@ -28,6 +28,7 @@
 #include <math.h>
 #include <limits.h>
 #include "mapOperations.h"
+#include "memoryManager.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -66,40 +67,36 @@ static void MX_USART6_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-// variabili per ricevere e mandare messaggi dalla seriale
+// serial variables
 uint8_t rxBuffer[RX_BUFFER_SIZE];
 uint8_t rxByte;
 uint8_t rxIndex = 0;
 char buffer[50];
 uint8_t len;
-
-//variabile per mandare stringhe via UART
 char* message = "";
 
-//numero di passi che ha fatto la macchina
+// number of steps of the machine
 unsigned long counter = 0;
 
-//numero di passi che deve fare la macchina
+// number of steps that the machine has to do
 unsigned long targetSteps = 0;
 
-//variabile per far partire le ruote più lente per non dare strattoni ai motori
+// number of steps to let the machine move slowly at the start
 uint8_t counterDelay = 0;
 
-// Logica per ridurre del 5% i passi del motore destro
+// number of steps that the right motor has to do (because this motor is moving faster)
 uint8_t stepRightCounter = 0;
 bool stepOK = false;
 
-/*stato del programma
- * 0 -> TODO
- * 1 -> prende un punto dal tracciato e calcola l'angolo tra il punto corrente e quello finale e il numero di passi da fare per arrivare al punto finale
- * 2 -> calcola i passi per girarti dell'angolo indicato
- * 3 -> aspetta che finisca di girare
- * 4 -> vai dritto
- * 5 -> aspetta che abbia finito di andare dritto e torna allo stato 1
+/*
+ * states of the program
+ * 0 		: nothing
+ * 1 -> 3 	: move the machine to the (0;0) coordinate
+ * 10 -> 15	: move to a target coordinate
  */
 uint8_t state = 0;
 
-//Stati per quando la macchina sta eseguendo il perimetro
+// States for when the machine is following the perimeter
 typedef enum {
     STATE_INIT,
     STATE_DETERMINE_STOP_INDEX,
@@ -110,7 +107,7 @@ typedef enum {
 	STATE_OBSTACLE_PERIMETER
 } StatePerimeter;
 
-//Stati per quando la macchina si muove verso un obiettivo
+// States for when the machine is going to a specific coordinate
 typedef enum {
     STATE_CALCULATE_MOVEMENT,
     STATE_ROTATE,
@@ -122,7 +119,7 @@ typedef enum {
 	STATE_OBSTACLE_MOVE
 } MoveToGoalState;
 
-//Stati per quando la macchina deve decidere in che direzione andare durante la scansione
+// States for when the machine is checking in which direction has to go
 typedef enum {
     STATE_CHECK_DIRECTION_CHANGE,
     STATE_LOG_DIRECTION_CHANGE,
@@ -133,7 +130,7 @@ typedef enum {
 	STATE_OBSTACLE_SELECT_DIRECTION
 } SelectDirectionState;
 
-//Stati per quando la macchina sta tornando a casa
+// States for when the machine is going back to home (0,0)
 typedef enum {
     STATE_FIND_SEGMENT,
     STATE_VERIFY_SEGMENT_FOUND,
@@ -144,65 +141,110 @@ typedef enum {
 	STATE_OBSTACLE_HOME
 } BackHomeState;
 
-//Stati per quando la macchina sta scansionando l'area
+// States for when the machine is scanning the area
 typedef enum {
     STATE_NORMAL,
     STATE_OBSTACLE,
 	STATE_FINISHED
 } ScanState;
 
-StatePerimeter currentStatePerimeter = STATE_INIT; // Stato iniziale
-MoveToGoalState currentStateMoveToGoal = STATE_CALCULATE_MOVEMENT; // Stato iniziale
-SelectDirectionState currentStateDirection = STATE_CHECK_DIRECTION_CHANGE; // Stato iniziale
-BackHomeState currentStateBackHome = STATE_FIND_SEGMENT; // Stato iniziale
-ScanState stateScan = STATE_NORMAL; // Stato iniziale
+StatePerimeter currentStatePerimeter = STATE_INIT; // Init state
+MoveToGoalState currentStateMoveToGoal = STATE_CALCULATE_MOVEMENT; // Init state
+SelectDirectionState currentStateDirection = STATE_CHECK_DIRECTION_CHANGE; // Init state
+BackHomeState currentStateBackHome = STATE_FIND_SEGMENT; // Init state
+ScanState stateScan = STATE_NORMAL; // Init state
 
 
-//flag per fermare in emergenza la macchina o per farla ripartire
+// flag to stop the machine for emergency
 bool stop = true;
-//flag per indicare se la macchina ha finito di fare gli step indicati quindi è nella posizione richiesta
+// flag to indicate when the car has moved in the target location
 bool moved = true;
-//flag per indicare che hai un ostacolo davanti a te
+//flag to indicate if there is an obstacle
 bool obstacle = false;
 
-//flag per indicare se la macchina è andata avanti per salvare il punto nel tracciato
-bool avanti = false;
-//flag per indicare se la macchina è andata indietro per salvare il punto nel tracciato
-bool indietro = false;
-//flag per indicare se la macchina è andata a destra per indicare quanti passi e quindi di quanti gradi mi sono spostato
-bool destra = false;
-//flag per indicare se la macchina è andata a destra per indicare quanti passi e quindi di quanti gradi mi sono spostato
-bool sinistra = false;
+// Flag to indicate whether the machine has moved forward to save the point in the track
+bool forward = false;
 
-//posizione corrente della macchina nello spazio
+// Flag to indicate whether the machine has moved backward to save the point in the track
+bool backward = false;
+
+// Flag to indicate whether the machine has moved to the right to track the number of steps and the corresponding angle change
+bool right = false;
+
+// Flag to indicate whether the machine has moved to the left to track the number of steps and the corresponding angle change
+bool left = false;
+
+
+// Current position of the machine in space
 Point current_position = {0.0, 0.0};
 
-//angolo corrente della macchina
-double current_angle = M_PI/2;
+// Current angle of the machine (initialized to π/2 radians, meaning it starts facing upwards)
+double current_angle = M_PI / 2;
 
-//posizione della casa base
+// Position of the home base
 Point zero = {0.0, 0.0};
 
-//numero di steps e angolo di rotazione che deve fare la macchina
+// Number of steps and rotation angle required for the machine
 unsigned long steps = 0;
 double rotation_angle = 0.0;
 long rotation_steps = 0;
 
-//direzione precedente e attuale [0, 1, 2, 3, -1] -> [Sopra, Sotto, Destra, Sinistra]
+// Previous and current direction [0, 1, 2, 3, -1] -> [Up, Down, Right, Left]
 int8_t previousDir;
 int8_t dir;
 
-//colonna e riga della mappa dove si inizia il processo
+// Column and row in the map where the process starts
 int8_t startX, startY = 0;
 
-//righe e colonne scansionate verticalmente tramite la funzione scanMatrix
-int8_t scanRows[60], scanColumns[60]; // Buffer per i risultati
-//numero di scansioni effettuate
+// Rows and columns scanned vertically using the scanMatrix function
+int8_t scanRows[60], scanColumns[60]; // Buffer for scan results
+
+// Number of scans performed
 uint8_t scanNumber = 0;
 
+/**
+ * @brief Handler for sensor interrupts.
+ *
+ * This function is called when an interrupt occurs on the GPIO pin 0. It calls the
+ * `HAL_GPIO_EXTI_IRQHandler()` function to handle the interrupt for the pin.
+ */
+void EXTI0_0_IRQHandler(void){
+	HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);
+}
 
+/**
+ * @brief Callback for sensor interrupt.
+ *
+ * This function is called when a GPIO interrupt is triggered. If the interrupt
+ * is from GPIO pin 0, it checks the state of the obstacle sensor. If an obstacle
+ * is detected, it calls `checkStates()`. Otherwise, it sends a message via UART
+ * indicating that the area is free.
+ *
+ * @param GPIO_Pin The pin that triggered the interrupt.
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+	if(GPIO_Pin == GPIO_PIN_0){
+		obstacle = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0);
+		if(obstacle){
+			checkStates();
+		}else{
+			stop = false;
+			message = "Object Free!\n";
+			HAL_UART_Transmit(&huart6, (uint8_t*)message, strlen(message), HAL_MAX_DELAY);
+		}
+	}
+}
 
-// Callback di ricezione dei messaggi seriali
+/**
+ * @brief Callback function for receiving UART data.
+ *
+ * This function is called when UART data is received. It processes the received
+ * byte, and when a newline character (`\n`) is detected, it processes the
+ * complete string by calling `Process_Received_String()`. It then continues the
+ * reception of data via UART.
+ *
+ * @param huart Pointer to the UART handle.
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART6) {
         if (rxByte == '\n') {        // Controlla il terminatore '\n'
@@ -224,59 +266,57 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     }
 }
 
-// Funzione per elaborare la stringa ricevuta
+/**
+ * @brief Processes the received command string.
+ *
+ * This function processes the received command and performs the corresponding action
+ * such as saving, erasing, checking the track, starting or stopping the robot, or controlling
+ * the motors based on the parsed command. It sends status messages back via UART.
+ *
+ * @param str The command string received via UART.
+ */
 void Process_Received_String(char* str) {
 
     if(strcmp(str, "save") == 0){
     	save_polygon_to_flash();
-    	message = "Tracciato Salvato\n";
+    	message = "Track Saved\n";
     	HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     }else if(strcmp(str, "erase") == 0){
     	erase_polygon();
-    	message = "Tracciato Cancellato!\n";
+    	message = "Track Deleted!\n";
     	HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     }else if(strcmp(str, "check") == 0){
     	if(load_polygon_from_flash()){
-    		message = "Tracciato in memoria\n";
+    		message = "Track in memory\n";
     		HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     	}else{
-    		message = "Tracciato non in memoria\n";
+    		message = "Track not in memory\n";
     		HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     	}
     }else if(strcmp(str, "start") == 0){
     	stop = false;
     	if(load_polygon_from_flash()){
-    		message = "Tagliaerba in Movimento\n";
+    		message = "Track in memory\n";
     		HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     		state = 11;
     	}else{
-    		message = "Tracciato non in memoria\n";
+    		message = "Track not in memory\n";
     		HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     	}
     }else if(strcmp(str, "stop") == 0){
     	stop = !stop;
     	if(stop){
-    		message = "Tagliaerba Fermato\n";
+    		message = "Machine stopped\n";
         	HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     	}else{
-    		message = "Tagliaerba in Movimento\n";
+    		message = "Machine in acrion\n";
         	HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     	}
 
     }else if(strcmp(str, "home") == 0){
-    	message = "Tagliaerba torna a casa\n";
+    	message = "Machine is going back Home...\n";
     	HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     	state = 1;
-    }else if(strcmp(str, "obstacle") == 0){
-    	obstacle = !obstacle;
-    	if(obstacle){
-    		checkStates();
-    	}else{
-        	stop = false;
-        	message = "Oggetto liberato!\n";
-    		HAL_UART_Transmit(&huart6, (uint8_t*)message, strlen(message), HAL_MAX_DELAY);
-    	}
-
     }else if(strcmp(str, "1") == 0){
     	//caso 1 verificato
     	add_boundary_point(0, 28000);
@@ -327,204 +367,277 @@ void Process_Received_String(char* str) {
     	add_boundary_point(28000, 28000);
     	add_boundary_point(28000, 0);
     	add_boundary_point(0, 0);
-    }else{
-    	// Trova i caratteri ':' e ';' nella stringa
-    	char *colon_ptr = strchr(str, ':');
-    	char *semicolon_ptr = strchr(str, ';');
+    }else {
+        // Find ':' and ';' characters in the string
+        char *colon_ptr = strchr(str, ':');
+        char *semicolon_ptr = strchr(str, ';');
 
-    	// Verifica che entrambi i caratteri siano presenti e in posizione corretta
-    	if (colon_ptr != NULL && semicolon_ptr != NULL && semicolon_ptr > colon_ptr) {
-    		if(state == 0){
-				*semicolon_ptr = '\0';  // Termina la stringa dopo la seconda parte
-				char *part1 = str;
-				char *part2 = colon_ptr + 1;
+        // Verify that both characters are present and in the correct position
+        if (colon_ptr != NULL && semicolon_ptr != NULL && semicolon_ptr > colon_ptr) {
+            if(state == 0){
+                *semicolon_ptr = '\0';  // Terminate the string after the second part
+                char *part1 = str;
+                char *part2 = colon_ptr + 1;
 
-				*colon_ptr = '\0';  // Termina la prima parte
+                *colon_ptr = '\0';  // Terminate the first part
 
-				// Converti le parti in numeri interi
-				int angle = atoi(part1);
-				int force = atoi(part2);
+                // Convert parts to integers
+                int angle = atoi(part1);
+                int force = atoi(part2);
 
-				// Usa angle e power come necessario
-				len = snprintf(buffer, sizeof(buffer), "%d:%d;\n", angle, force);
-				HAL_UART_Transmit(&huart6, (uint8_t*)message, len, HAL_MAX_DELAY);
+                // Use angle and power as needed
+                len = snprintf(buffer, sizeof(buffer), "%d:%d;\n", angle, force);
+                HAL_UART_Transmit(&huart6, (uint8_t*)message, len, HAL_MAX_DELAY);
 
-            	Control_Motors(angle, force);
-            }else{
-            	message = "Tagliaerba ancora in movimento, aspettare la fine del processo\n";
-            	HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+                Control_Motors(angle, force);
+            } else {
+                message = "Mower still in motion, please wait for the process to complete\n";
+                HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
             }
-    	} else {
-
-    		len = snprintf(buffer, sizeof(buffer), "Not valid: %s", str);
+        } else {
+            len = snprintf(buffer, sizeof(buffer), "Not valid: %s", str);
             HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
-    	}
+        }
     }
 }
 
-//funzione per controllare i motori via seriale
-void Control_Motors(int angle, int force)
-{
-	//quando rilascio i pulsanti viene mandato il comando 000:000; e qui si ferma la macchina
-	if(angle == 0 && force == 0){
-		stop = true;
-		//se sono andato avanti aggiungo il punto in avanti di n passi
-		if(avanti){
-			avanti = false;
-			add_forward(counter);
-		//se sono andato indietro aggiungo il punto indietro di n passi
-		}else if(indietro){
-			indietro = false;
-			add_backward(counter);
-		//se sono andato a sinistra aggiorno l'angolo di rotazione della mia macchina
-		}else if(sinistra){
-			sinistra = false;
-		    float angleLeft = calcolaAngoloRotazione(counter);
-			add_left(angleLeft);
-		//se sono andato a destra aggiorno l'angolo di rotazione della mia macchina
-		}else if(destra){
-			destra = false;
-		    float angleRight = calcolaAngoloRotazione(counter);
-			add_right(angleRight);
-		}
-
-	//quando clicco un pulsante della macchina si muoverà in base a quale clicco
-	}else{
-		if(angle == 90){
-			//macchina va dritta fino a quando non rilascio il pulsante
-			move_forward(0, ULONG_MAX);
-			avanti = true;
-		}else if(angle == 270){
-			//macchina va indietro fino a quando non rilascio il pulsante
-			move_backward(0, ULONG_MAX);
-			indietro = true;
-		}else if(angle == 180){
-			//macchina gira a sinistra fino a quando non rilascio il pulsante
-			move_left(0, ULONG_MAX);
-			sinistra = true;
-		}else if (angle == 0){
-			//macchina gira a destra fino a quando non rilascio il pulsante
-			move_right(0, ULONG_MAX);
-			destra = true;
-		}
-	}
+/**
+ * @brief Controls the robot motors based on the received angle and force.
+ *
+ * This function processes the received angle and force parameters and moves the
+ * robot accordingly. If both values are zero, the robot stops. Otherwise, it
+ * moves the robot in the direction specified by the angle (forward, backward,
+ * left, or right).
+ *
+ * @param angle The desired angle of movement (0 for right, 90 for forward,
+ *              180 for left, and 270 for backward).
+ * @param force The force to apply for the movement (affects motor speed or power).
+ */
+void Control_Motors(int angle, int force) {
+    // If both angle and force are zero, stop the machine
+    if(angle == 0 && force == 0){
+        stop = true;
+        if(forward){
+            forward = false;
+            add_forward(counter);
+        } else if(backward){
+            backward = false;
+            add_backward(counter);
+        } else if(left){
+            left = false;
+            float angleLeft = calcolaAngoloRotazione(counter);
+            add_left(angleLeft);
+        } else if(right){
+            right = false;
+            float angleRight = calcolaAngoloRotazione(counter);
+            add_right(angleRight);
+        }
+    } else {
+        // Move the machine based on the command received
+        if(angle == 90){
+            move_forward(0, ULONG_MAX);
+            forward = true;
+        } else if(angle == 270){
+            move_backward(0, ULONG_MAX);
+            backward = true;
+        } else if(angle == 180){
+            move_left(0, ULONG_MAX);
+            left = true;
+        } else if (angle == 0){
+            move_right(0, ULONG_MAX);
+            right = true;
+        }
+    }
 }
 
-//Interrupt del timer, questo timer fornisce gli steps alla mia macchina
+/**
+ * @brief Timer interrupt callback for motor step generation.
+ *
+ * This callback is triggered by a timer interrupt and is responsible for generating
+ * steps for the motors. The function checks whether the robot should continue
+ * moving or if the movement should stop based on the target step count. It manages
+ * the step generation for both the left and right motors, ensuring proper synchronization.
+ *
+ * @param htim The timer handle associated with the interrupt.
+ */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	//il mio motore è settato con 1/8 step quindi 200*8 per fare un giro completo * 2 perchè questo timer fa il toggle
+    // My motor is set to 1/8 step, so 200 * 8 to complete a full revolution * 2 because this timer toggles
     if (htim->Instance == TIM2) {
-    	if(!stop){
-            // Esegui qui l'operazione che desideri a 2 kHz
-        	if(targetSteps > counter){
-        		if(counter < 50){
-        			counterDelay++;
-        			if(counterDelay >= 4){
-        				stepOK = true;
-        			}
-        		}else if(counter < 100){
-        			counterDelay++;
-        			if(counterDelay >= 3){
-        				stepOK = true;
-        			}
-        		}else if(counter < 150){
-        			counterDelay++;
-        			if(counterDelay >= 2){
-        				stepOK = true;
-        			}
-        		}else{
-        			stepOK = true;
-        		}
+        if (!stop) {
+            // Perform the desired operation at 2 kHz
+            if (targetSteps > counter) {
+                if (counter < 50) {
+                    counterDelay++;
+                    if (counterDelay >= 4) {
+                        stepOK = true;
+                    }
+                } else if (counter < 100) {
+                    counterDelay++;
+                    if (counterDelay >= 3) {
+                        stepOK = true;
+                    }
+                } else if (counter < 150) {
+                    counterDelay++;
+                    if (counterDelay >= 2) {
+                        stepOK = true;
+                    }
+                } else {
+                    stepOK = true;
+                }
 
-        		if(stepOK == true){
-                    // Step motore sinistro
+                if (stepOK == true) {
+                    // Left motor step
                     HAL_GPIO_TogglePin(STEP_LEFT_GPIO_Port, STEP_LEFT_Pin);
 
                     stepRightCounter++;
-                    if (stepRightCounter >= 100) { // Ogni 70 passi del sinistro, il destro ne salta 1 quindi riduzione del tot%
-                        stepRightCounter = 0;  // Reset del contatore per il motore destro
+                    if (stepRightCounter >= 100) { // Every 70 steps of the left motor, the right motor skips 1, reducing by a total percentage
+                        stepRightCounter = 0;  // Reset the counter for the right motor
                     } else {
-                        HAL_GPIO_TogglePin(GPIOD, STEP_RIGHT_Pin);  // Step motore destro
+                        HAL_GPIO_TogglePin(GPIOD, STEP_RIGHT_Pin);  // Right motor step
                     }
-            		counter++;
-            		stepOK = false;
-            		counterDelay = 0;
-        		}
-        	}else{
-        		moved = true;
-        	}
-    	}
+                    counter++;
+                    stepOK = false;
+                    counterDelay = 0;
+                }
+            } else {
+                moved = true;
+            }
+        }
     }
 }
 
+/**
+ * @brief Moves the robot forward.
+ *
+ * This function enables the motors and sets the direction pins to move the robot forward.
+ * It sets the `stop` flag to `false` (indicating that the robot should move), and initializes the movement counter and target steps.
+ *
+ * @param cnt The current step count (starting point for the movement).
+ * @param trgStep The target step count (number of steps to be taken).
+ */
 void move_forward(unsigned long cnt, unsigned long trgStep){
-	//abilito i motori
-	HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
+    // Enable the motors by setting the enable pins to active low
+    HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
 
-	HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_SET);
+    // Set the direction for forward movement
+    // LEFT motor: Reset direction (forward)
+    // RIGHT motor: Set direction (forward)
+    HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_SET);
 
-	stop = false;
-	moved = false;
-	counter = cnt;
-	targetSteps = trgStep;
+    // Set flags and counters for movement
+    stop = false;     // Robot is not stopped, so it will move
+    moved = false;    // Movement has not been completed yet
+    counter = cnt;    // Set the current count of steps
+    targetSteps = trgStep;  // Set the target step count
 }
 
+/**
+ * @brief Moves the robot backward.
+ *
+ * This function enables the motors and sets the direction pins to move the robot backward.
+ * It sets the `stop` flag to `false` (indicating that the robot should move), and initializes the movement counter and target steps.
+ *
+ * @param cnt The current step count (starting point for the movement).
+ * @param trgStep The target step count (number of steps to be taken).
+ */
 void move_backward(unsigned long cnt, unsigned long trgStep){
-	//abilito i motori
-	HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
+    // Enable the motors by setting the enable pins to active low
+    HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
 
-	HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_RESET);
+    // Set the direction for backward movement
+    // LEFT motor: Set direction (backward)
+    // RIGHT motor: Reset direction (backward)
+    HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_RESET);
 
-	stop = false;
-	moved = false;
-	counter = cnt;
-	targetSteps = trgStep;
+    // Set flags and counters for movement
+    stop = false;     // Robot is not stopped, so it will move
+    moved = false;    // Movement has not been completed yet
+    counter = cnt;    // Set the current count of steps
+    targetSteps = trgStep;  // Set the target step count
 }
 
+/**
+ * @brief Moves the robot to the right.
+ *
+ * This function enables the motors and sets the direction pins to move the robot to the right.
+ * It sets the `stop` flag to `false` (indicating that the robot should move), and initializes the movement counter and target steps.
+ *
+ * @param cnt The current step count (starting point for the movement).
+ * @param trgStep The target step count (number of steps to be taken).
+ */
 void move_right(unsigned long cnt, unsigned long trgStep){
-	//abilito i motori
-	HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
+    // Enable the motors by setting the enable pins to active low
+    HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
 
-	HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_RESET);
+    // Set the direction for right movement
+    // LEFT motor: Reset direction (forward)
+    // RIGHT motor: Reset direction (forward)
+    HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_RESET);
 
-	stop = false;
-	moved = false;
-	counter = cnt;
-	targetSteps = trgStep;
+    // Set flags and counters for movement
+    stop = false;     // Robot is not stopped, so it will move
+    moved = false;    // Movement has not been completed yet
+    counter = cnt;    // Set the current count of steps
+    targetSteps = trgStep;  // Set the target step count
 }
 
+/**
+ * @brief Moves the robot to the left.
+ *
+ * This function enables the motors and sets the direction pins to move the robot to the left.
+ * It sets the `stop` flag to `false` (indicating that the robot should move), and initializes the movement counter and target steps.
+ *
+ * @param cnt The current step count (starting point for the movement).
+ * @param trgStep The target step count (number of steps to be taken).
+ */
 void move_left(unsigned long cnt, unsigned long trgStep){
-	//abilito i motori
-	HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
+    // Enable the motors by setting the enable pins to active low
+    HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_RESET);
 
-	HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_SET);
+    // Set the direction for left movement
+    // LEFT motor: Set direction (backward)
+    // RIGHT motor: Set direction (backward)
+    HAL_GPIO_WritePin(GPIOD, DIR_LEFT_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOD, DIR_RIGHT_Pin, GPIO_PIN_SET);
 
-	stop = false;
-	moved = false;
-	counter = cnt;
-	targetSteps = trgStep;
+    // Set flags and counters for movement
+    stop = false;     // Robot is not stopped, so it will move
+    moved = false;    // Movement has not been completed yet
+    counter = cnt;    // Set the current count of steps
+    targetSteps = trgStep;  // Set the target step count
 }
 
+/**
+ * @brief Moves the robot along the perimeter of the defined boundaries.
+ *
+ * The robot follows the perimeter in either a clockwise or counterclockwise direction
+ * until it reaches the stop point, which is determined based on the target position.
+ * If no target is provided, the robot completes a full perimeter loop.
+ *
+ * @param target Pointer to the target Point where the robot should stop. If NULL,
+ *               the robot completes the entire perimeter.
+ * @param clockwise Boolean indicating the direction of movement:
+ *                  - true: move clockwise
+ *                  - false: move counterclockwise
+ */
 void followPerimeter(Point* target, bool clockwise) {
-	currentStatePerimeter = STATE_INIT; // Stato iniziale
+    currentStatePerimeter = STATE_INIT; // Initial state
     int stop_index = -1;
-     // Indice per i boundary
-    bool completed = false;
+    bool completed = false; // Completion flag
 
     while (!completed) {
         switch (currentStatePerimeter) {
             case STATE_INIT:
-                // Inizializzazione dello stato
-                stop_index = -1; // Reset del stop_index
-                currentStatePerimeter = STATE_DETERMINE_STOP_INDEX; // Passa allo stato successivo
+                // Initialize state
+                stop_index = -1; // Reset stop_index
+                currentStatePerimeter = STATE_DETERMINE_STOP_INDEX; // Move to the next state
                 break;
 
             case STATE_DETERMINE_STOP_INDEX:
@@ -538,155 +651,181 @@ void followPerimeter(Point* target, bool clockwise) {
                         }
                     }
                 }
-                // Determina lo stato successivo in base alla direzione
+                // Determine the next state based on the direction
                 currentStatePerimeter = clockwise ? STATE_MOVE_CLOCKWISE : STATE_MOVE_COUNTERCLOCKWISE;
                 break;
 
             case STATE_MOVE_CLOCKWISE:
-
                 for (int i = 0; i < boundary_count; i++) {
-                    // Fermati se siamo arrivati al stop_index
+                    // Stop if we reach stop_index
                     if (stop_index != -1 && i == stop_index) {
-                    	currentStatePerimeter = STATE_STOP; // Passa allo stato STOP
-                        return;  // Esce dalla funzione se arriva a stop_index
+                        currentStatePerimeter = STATE_STOP; // Move to STOP state
+                        return;  // Exit function if stop_index is reached
                     }
 
                     Point goal = boundaries[i];
-                    moveToGoal(goal);  // Funzione che muove il robot verso il punto goal
+                    moveToGoal(goal);  // Move the robot toward the goal point
                 }
-                currentStatePerimeter = STATE_PERIMETER_COMPLETE; // Passa allo stato STOP
+                currentStatePerimeter = STATE_PERIMETER_COMPLETE; // Move to STOP state
                 break;
 
             case STATE_MOVE_COUNTERCLOCKWISE:
-                // Movimento antiorario: partire da boundary_count - 2 e arrivare fino a 0, poi l'ultimo punto
+                // Counterclockwise movement: start from boundary_count - 2 and go down to 0, then the last point
                 for (int i = boundary_count - 2; i >= 0; i--) {
-                    // Fermati se siamo arrivati al stop_index
+                    // Stop if we reach stop_index
                     if (stop_index != -1 && i == stop_index) {
-                    	currentStatePerimeter = STATE_STOP; // Passa allo stato STOP
-                        return;  // Esce dalla funzione se arriva a stop_index
+                        currentStatePerimeter = STATE_STOP; // Move to STOP state
+                        return;  // Exit function if stop_index is reached
                     }
 
                     Point goal = boundaries[i];
-                    moveToGoal(goal);  // Funzione che muove il robot verso il punto goal
+                    moveToGoal(goal);  // Move the robot toward the goal point
                 }
-                // Dopo aver raggiunto l'ultimo punto (boundary_count - 1)
+                // After reaching the last point (boundary_count - 1)
                 Point lastGoal = boundaries[boundary_count - 1];
-                moveToGoal(lastGoal);  // Muove il robot all'ultimo punto
+                moveToGoal(lastGoal);  // Move the robot to the last point
 
-                currentStatePerimeter = STATE_PERIMETER_COMPLETE; // Passa allo stato STOP
+                currentStatePerimeter = STATE_PERIMETER_COMPLETE; // Move to STOP state
                 break;
+
             case STATE_STOP:
-                // Stato finale
-                completed = true; // Esce dal ciclo
+                // Final state
+                completed = true; // Exit loop
                 break;
 
             case STATE_OBSTACLE_PERIMETER:
-            	break;
+                break;
 
             default:
-                // Gestione errore di stato sconosciuto
-                completed = true; // Termina con un errore
+                // Handle unknown state error
+                completed = true; // Terminate with an error
                 break;
         }
     }
 }
 
+/**
+ * @brief Moves the robot towards a specified goal point.
+ *
+ * This function controls the movement of the robot in a state-based manner.
+ * It calculates the necessary steps and rotation angle, executes the rotation,
+ * moves forward to the goal, and updates the robot's position upon completion.
+ *
+ * @param goal The target point the robot should move towards.
+ */
 void moveToGoal(Point goal) {
-	currentStateMoveToGoal = STATE_CALCULATE_MOVEMENT; // Stato iniziale
-    unsigned long steps = 0;
-    double rotation_angle = 0;
-    long rotation_steps = 0;
+    currentStateMoveToGoal = STATE_CALCULATE_MOVEMENT; // Initial state
+    unsigned long steps = 0;   // Number of movement steps required
+    double rotation_angle = 0; // Angle required to reach the goal
+    long rotation_steps = 0;   // Steps required to rotate
 
     while (1) {
         switch (currentStateMoveToGoal) {
             case STATE_CALCULATE_MOVEMENT:
-                // Calcola i passi e l'angolo necessari per raggiungere il goal
+                // Calculate the number of steps and rotation angle needed to reach the goal
                 calculate_steps_and_angle(goal, &steps, &rotation_angle);
                 rotation_steps = calcolaNumeroPassiRotazione(rotation_angle);
-                currentStateMoveToGoal = STATE_ROTATE; // Passa allo stato di rotazione
+                currentStateMoveToGoal = STATE_ROTATE; // Transition to rotation state
                 break;
 
             case STATE_ROTATE:
-                // Esegui la rotazione
+                // Perform rotation to align with the goal
                 if (rotation_steps < 0) {
-                    move_right(0, (unsigned long)labs(rotation_steps));  // Ruota a destra
+                    move_right(0, (unsigned long)labs(rotation_steps));  // Rotate right
                 } else if (rotation_steps > 0) {
-                    move_left(0, (unsigned long)rotation_steps);  // Ruota a sinistra
+                    move_left(0, (unsigned long)rotation_steps);  // Rotate left
                 }
-                currentStateMoveToGoal = STATE_WAIT_FOR_ROTATION; // Passa allo stato di attesa
+                currentStateMoveToGoal = STATE_WAIT_FOR_ROTATION; // Transition to wait state
                 break;
 
             case STATE_WAIT_FOR_ROTATION:
-                // Aspetta che la rotazione finisca
+                // Wait until rotation is complete
                 if (moved) {
-                	currentStateMoveToGoal = STATE_MOVE_FORWARD; // Passa allo stato di avanzamento
+                    currentStateMoveToGoal = STATE_MOVE_FORWARD; // Proceed to forward movement
                 }
                 break;
 
             case STATE_MOVE_FORWARD:
-                // Esegui l'avanzamento
+                // Move forward towards the goal
                 move_forward(0, steps);
-                currentStateMoveToGoal = STATE_WAIT_FOR_MOVEMENT; // Passa allo stato di attesa per il movimento
+                currentStateMoveToGoal = STATE_WAIT_FOR_MOVEMENT; // Transition to movement wait state
                 break;
 
             case STATE_WAIT_FOR_MOVEMENT:
-                // Aspetta che l'avanzamento finisca
+                // Wait until forward movement is complete
                 if (moved) {
-                	currentStateMoveToGoal = STATE_UPDATE_POSITION; // Passa allo stato di aggiornamento della posizione
+                    currentStateMoveToGoal = STATE_UPDATE_POSITION; // Proceed to update position
                 }
                 break;
 
             case STATE_UPDATE_POSITION:
-                // Aggiorna la posizione e l'angolo attuale
+                // Update the robot's position and current angle
                 current_position = goal;
                 current_angle += rotation_angle;
-                currentStateMoveToGoal = STATE_MOVE_TO_GOAL_COMPLETE; // Passa allo stato di completamento
+                currentStateMoveToGoal = STATE_MOVE_TO_GOAL_COMPLETE; // Mark movement as complete
                 break;
 
             case STATE_MOVE_TO_GOAL_COMPLETE:
-                // Stato finale: esci dalla funzione
+                // Final state: exit the function
                 return;
+
             case STATE_OBSTACLE_MOVE:
-            	current_angle += rotation_angle;
-            	current_position.x = current_position.x + counter * cos(current_angle);
-            	current_position.y = current_position.y + counter * sin(current_angle);
-            	return;
+                // Handle movement in the presence of obstacles
+                current_angle += rotation_angle;
+                current_position.x = current_position.x + counter * cos(current_angle);
+                current_position.y = current_position.y + counter * sin(current_angle);
+                return;
 
             default:
-                // Stato sconosciuto: termina con errore
+                // Unknown state: exit with an error
                 return;
         }
     }
 }
 
+/**
+ * @brief Selects the direction and moves the robot accordingly.
+ *
+ * This function manages the process of checking and logging direction changes,
+ * calculating the target position, and moving towards it. It ensures that the
+ * robot correctly follows its path and logs significant direction changes.
+ *
+ * @param previousDir The previous movement direction of the robot.
+ * @param dir The new movement direction.
+ * @param node Pointer to the target node (destination).
+ */
 void selectDirection(int previousDir, int dir, Node* node) {
-	currentStateDirection = STATE_CHECK_DIRECTION_CHANGE;
-    Point target = {0, 0};
+    currentStateDirection = STATE_CHECK_DIRECTION_CHANGE; // Initial state
+    Point target = {0, 0};  // Target position for movement
     int8_t current_row = 0;
     int8_t current_column = 0;
     int8_t diffRows = 0;
     int8_t diffColumns = 0;
-    bool directionLogged = false;
+    bool directionLogged = false; // Tracks if direction change has been logged
 
     while (1) {
         switch (currentStateDirection) {
             case STATE_CHECK_DIRECTION_CHANGE:
-                // Verifica se è necessario registrare un cambio di direzione
+                // Check if a direction change should be logged
                 if (dir != previousDir && dir != -1 && previousDir != -2) {
-                	currentStateDirection = STATE_LOG_DIRECTION_CHANGE;
+                    currentStateDirection = STATE_LOG_DIRECTION_CHANGE;
                 } else if (dir == -1) {
-                	currentStateDirection = STATE_FINAL_POINT_LOG;
+                    currentStateDirection = STATE_FINAL_POINT_LOG;
                 } else {
-                	currentStateDirection = STATE_SELECT_DIRECTION_COMPLETE;
+                    currentStateDirection = STATE_SELECT_DIRECTION_COMPLETE;
                 }
                 break;
 
             case STATE_LOG_DIRECTION_CHANGE:
+                // Log the direction change
                 if (!directionLogged) {
-                    len = snprintf(buffer, sizeof(buffer), "Cambio direzione al punto (%d, %d)\n", node->column, node->row);
+                    len = snprintf(buffer, sizeof(buffer),
+                                   "Cambio direzione al punto (%d, %d)\n",
+                                   node->column, node->row);
                     HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
                     directionLogged = true;
                 }
+                // Find the robot's current node position
                 findNode(current_position, &current_row, &current_column);
                 diffRows = abs(node->row - current_row);
                 diffColumns = abs(node->column - current_column);
@@ -694,14 +833,14 @@ void selectDirection(int previousDir, int dir, Node* node) {
                 break;
 
             case STATE_CALCULATE_TARGET:
-                // Calcola il target in base alla direzione
-                if (previousDir == 0 || previousDir == 1) { // Sopra o Sotto
+                // Determine the target point based on the previous direction
+                if (previousDir == 0 || previousDir == 1) { // Moving Up or Down
                     target.x = current_position.x;
                     target.y = node->row * cellSize - abs(minY);
-                } else if (previousDir == 2 || previousDir == 3) { // Destra o Sinistra
+                } else if (previousDir == 2 || previousDir == 3) { // Moving Right or Left
                     target.x = node->column * cellSize - abs(minX);
                     target.y = current_position.y;
-                } else {
+                } else { // No movement change
                     target.x = current_position.x;
                     target.y = current_position.y;
                 }
@@ -709,6 +848,7 @@ void selectDirection(int previousDir, int dir, Node* node) {
                 break;
 
             case STATE_MOVE_TO_TARGET:
+                // Move the robot to the calculated target
                 moveToGoal(target);
                 if (currentStateDirection != STATE_OBSTACLE_SELECT_DIRECTION) {
                     currentStateDirection = STATE_SELECT_DIRECTION_COMPLETE;
@@ -716,13 +856,18 @@ void selectDirection(int previousDir, int dir, Node* node) {
                 break;
 
             case STATE_FINAL_POINT_LOG:
-                len = snprintf(buffer, sizeof(buffer), "Punto finale: (%d, %d)\n", node->column, node->row);
+                // Log the final point
+                len = snprintf(buffer, sizeof(buffer),
+                               "Punto finale: (%d, %d)\n",
+                               node->column, node->row);
                 HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
+                // Find the robot's current node position
                 findNode(current_position, &current_row, &current_column);
                 diffRows = abs(node->row - current_row);
                 diffColumns = abs(node->column - current_column);
 
+                // Determine the correct target point
                 if (diffRows > 0 || diffColumns > 0) {
                     if (diffRows > 0) {
                         target.x = current_position.x;
@@ -736,144 +881,165 @@ void selectDirection(int previousDir, int dir, Node* node) {
                 break;
 
             case STATE_SELECT_DIRECTION_COMPLETE:
+                // Movement process completed successfully
                 return;
 
             case STATE_OBSTACLE_SELECT_DIRECTION:
+                // Handle obstacle detection and update state
                 stateScan = STATE_OBSTACLE;
                 return;
 
             default:
+                // Unknown state, terminate
                 return;
         }
     }
 }
 
+/**
+ * @brief Navigate the robot back to its home position (point (0,0)) along the polygon boundary.
+ *
+ * This function handles the process of moving the robot back to its starting point
+ * by navigating along the polygon boundary in either a clockwise or counterclockwise direction.
+ * It checks which direction would take the robot to its destination in the shortest number of steps
+ * and moves the robot along the selected path.
+ */
 void backHome() {
-	currentStateBackHome = STATE_FIND_SEGMENT;
-    int start_index = -1;
-    int target_index = boundary_count - 1;  // Indice del punto (0,0)
-    int clockwise_steps = 0;
-    int counterclockwise_steps = 0;
-    bool clockwise = true;
-    int index = 0;
-    Point next_goal;
+    currentStateBackHome = STATE_FIND_SEGMENT;  // Initial state: search for the segment containing the current position
+    int start_index = -1;  // Index of the segment where the robot currently is
+    int target_index = boundary_count - 1;  // The index of the home point (0,0) in the boundary list
+    int clockwise_steps = 0;  // Number of steps to reach the home point clockwise
+    int counterclockwise_steps = 0;  // Number of steps to reach the home point counterclockwise
+    bool clockwise = true;  // Flag indicating the selected direction (clockwise or counterclockwise)
+    int index = 0;  // Index for traversing the boundary
+    Point next_goal;  // The next point on the path to move to
 
     while (1) {
         switch (currentStateBackHome) {
             case STATE_FIND_SEGMENT:
-                // Trova il segmento in cui si trova la current_position
+                // Find the segment where the robot is currently located
                 for (int i = 0; i < boundary_count; i++) {
-                    Point p1 = boundaries[i];
-                    Point p2 = boundaries[(i + 1) % boundary_count];
+                    Point p1 = boundaries[i];  // First point of the segment
+                    Point p2 = boundaries[(i + 1) % boundary_count];  // Second point of the segment
                     if (isPointBetweenTwoPoints(current_position, p1, p2)) {
-                        start_index = i;
+                        start_index = i;  // Set the index of the segment where the robot is
                         break;
                     }
                 }
-                currentStateBackHome = STATE_VERIFY_SEGMENT_FOUND;
+                currentStateBackHome = STATE_VERIFY_SEGMENT_FOUND;  // Move to the next state to verify the segment
                 break;
 
             case STATE_VERIFY_SEGMENT_FOUND:
-                // Verifica se il segmento è stato trovato
+                // Check if the robot is on a valid segment
                 if (start_index == -1) {
-                    currentStateBackHome = STATE_BACK_HOME_COMPLETE;  // Esci dalla funzione
+                    currentStateBackHome = STATE_BACK_HOME_COMPLETE;  // No valid segment found, exit the function
                 } else {
-                	currentStateBackHome = STATE_CALCULATE_PATH;
+                    currentStateBackHome = STATE_CALCULATE_PATH;  // Proceed to calculate the path
                 }
                 break;
 
             case STATE_CALCULATE_PATH:
-                // Calcola il percorso in senso orario e antiorario
+                // Calculate the shortest path to the home point, both clockwise and counterclockwise
                 clockwise_steps = (target_index - start_index + boundary_count) % boundary_count;
                 counterclockwise_steps = (start_index - target_index + boundary_count) % boundary_count;
 
-                // Decidi la direzione più breve
+                // Decide the shortest path (clockwise or counterclockwise)
                 clockwise = (clockwise_steps <= counterclockwise_steps);
 
-                // Imposta l'indice iniziale per il percorso
+                // Set the initial index for following the path
                 if (clockwise) {
-                    index = (start_index + 1) % boundary_count;
+                    index = (start_index + 1) % boundary_count;  // Start moving clockwise from the next segment
                     currentStateBackHome = STATE_FOLLOW_PATH_CLOCKWISE;
                 } else {
-                    index = start_index;
+                    index = start_index;  // Start moving counterclockwise from the current segment
                     currentStateBackHome = STATE_FOLLOW_PATH_COUNTERCLOCKWISE;
                 }
                 break;
 
             case STATE_FOLLOW_PATH_CLOCKWISE:
-                // Movimento in senso orario verso il punto (0,0)
-                next_goal = boundaries[index];
-                moveToGoal(next_goal);  // Muovi verso il prossimo punto
+                // Move clockwise along the boundary towards the home point (0,0)
+                next_goal = boundaries[index];  // The next point on the boundary
+                moveToGoal(next_goal);  // Move to the goal
                 if (index == target_index) {
-                	currentStateBackHome = STATE_BACK_HOME_COMPLETE;
+                    currentStateBackHome = STATE_BACK_HOME_COMPLETE;  // If the home point is reached, exit
                 } else {
-                    index = (index + 1) % boundary_count;
+                    index = (index + 1) % boundary_count;  // Move to the next segment clockwise
                 }
                 break;
 
             case STATE_FOLLOW_PATH_COUNTERCLOCKWISE:
-                // Movimento in senso antiorario verso il punto (0,0)
-                next_goal = boundaries[index];
-                moveToGoal(next_goal);  // Muovi verso il prossimo punto
+                // Move counterclockwise along the boundary towards the home point (0,0)
+                next_goal = boundaries[index];  // The next point on the boundary
+                moveToGoal(next_goal);  // Move to the goal
                 if (index == target_index) {
-                	currentStateBackHome = STATE_BACK_HOME_COMPLETE;
+                    currentStateBackHome = STATE_BACK_HOME_COMPLETE;  // If the home point is reached, exit
                 } else {
-                    index = (index - 1 + boundary_count) % boundary_count;
+                    index = (index - 1 + boundary_count) % boundary_count;  // Move to the previous segment counterclockwise
                 }
                 break;
 
             case STATE_BACK_HOME_COMPLETE:
-                // Stato finale, uscita dalla funzione
+                // Final state: exit the function once the home point is reached
                 return;
 
             case STATE_OBSTACLE_HOME:
-            	break;
+                // Handle obstacle detection while returning home (not implemented in this code)
+                break;
 
             default:
-                // Stato sconosciuto, uscita di emergenza
+                // Emergency exit for unknown states
                 return;
         }
     }
 }
 
-void checkStates(){
-	switch (state) {
-	case 14:
-		//scansione interna del poligono
-		switch (currentStateDirection){
-		case STATE_MOVE_TO_TARGET:
-			stop = true;
-			obstacle = false;
-			currentStateMoveToGoal = STATE_OBSTACLE_MOVE;
-			currentStateDirection = STATE_OBSTACLE_SELECT_DIRECTION;
-			// Stato ostacoli: ricalcola il percorso
-			len = snprintf(buffer, sizeof(buffer),"Ostacolo rilevato! Ricalcolo del percorso...\n");
-			HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
-			break;
-		default:
-			stop = true;
-			len = snprintf(buffer, sizeof(buffer),"Ostacolo rilevato! Eliminare l'ostacolo\n");
-			HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
-			break;
-		}
+/**
+ * @brief Checks the current state and handles obstacle detection and response during navigation.
+ *
+ * This function monitors the robot's state and reacts accordingly when an obstacle is detected.
+ * It handles two cases: one for internal polygon scanning (when the robot is moving toward a target)
+ * and another for all other cases where the robot should stop and wait for the obstacle to be cleared.
+ */
+void checkStates() {
+    switch (state) {
+        case 14:
+            // Internal scanning of the polygon
+            switch (currentStateDirection) {
+                case STATE_MOVE_TO_TARGET:
+                    // If the robot is moving towards a target and detects an obstacle
+                    stop = true;  // Stop the robot
+                    obstacle = false;  // Reset obstacle flag
+                    currentStateMoveToGoal = STATE_OBSTACLE_MOVE;  // Change the state to handle obstacle
+                    currentStateDirection = STATE_OBSTACLE_SELECT_DIRECTION;  // Change direction state to obstacle handling
 
-		break;
-	default:
-		//in tutti gli altri casi stoppi la macchina e aspetti che l'ostacolo non ci sia più per poter andare avanti
-		stop = true;
-		// Stato ostacoli: ricalcola il percorso
-		len = snprintf(buffer, sizeof(buffer),"Ostacolo rilevato! Eliminare l'ostacolo\n");
-		HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
-		break;
-	}
+                    // Log the obstacle detection and recalculation of the path
+                    len = snprintf(buffer, sizeof(buffer), "Obstacle detected! Recalculating path...\n");
+                    HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
+                    break;
+
+                default:
+                    // For other cases when an obstacle is detected
+                    stop = true;  // Stop the robot
+                    // Log the obstacle detection and the need to clear it
+                    len = snprintf(buffer, sizeof(buffer), "Obstacle detected! Clear the obstacle\n");
+                    HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
+                    break;
+            }
+            break;
+
+        default:
+            // For all other cases, stop the robot and wait for the obstacle to be cleared
+            stop = true;  // Stop the robot
+            // Log the obstacle detection and the need to clear it
+            len = snprintf(buffer, sizeof(buffer), "Obstacle detected! Clear the obstacle\n");
+            HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
+            break;
+    }
 }
+
 
 /* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
 
@@ -925,16 +1091,17 @@ int main(void)
 	  	  case 0:
 	  		  break;
 	  	  case 1:
+	  		  // move the machine to coordinate (0,0)
 	  		  moveToGoal(zero);
 	  		  state = 2;
 	  		  currentStateMoveToGoal = STATE_CALCULATE_MOVEMENT;
 	  		  break;
 	      case 2:
-	    	  //rigirati in avanti
+	    	  //turn forward
 
-	    	  // Calcola i passi per raggiungere l'angolo PI/2
-	    	  float angle = M_PI/2- current_angle;
-	    	  // Normalizza tra -pi e pi
+	    	  // calculate steps between current angle and PI/2 (forward rotation)
+	    	  float angle = M_PI/2 - current_angle;
+	    	  // Normalize between -pi e pi
 	    	  if (angle > M_PI){
 	    		  angle -= 2 * M_PI;
 	    	  }
@@ -945,17 +1112,16 @@ int main(void)
 	    	  rotation_steps = calcolaNumeroPassiRotazione(angle);
 
 	    	  if (rotation_steps < 0) {
-	    		  move_right(0, labs(rotation_steps));  // Ruota a destra
+	    		  move_right(0, labs(rotation_steps));  // turn right
 	    	  } else if (rotation_steps > 0) {
-	    		  move_left(0, labs(rotation_steps));  // Ruota a sinistra
+	    		  move_left(0, labs(rotation_steps));  // turn left
 	    	  }
 	    	  state = 3;
 	          break;
 	      case 3:
-	    	  //aspetta che finisca di girarsi e poi vai avanti
+	    	  // wait until the machine is complete rotated and be ready for the next comand
 	    	  if(moved){
 	    		  current_angle = M_PI/2;
-	    		  // Aggiungi la nuova posizione ai confini del poligono
 	    		  add_boundary_point(current_position.x, current_position.y);
 		    	  HAL_GPIO_WritePin(GPIOE, ENABLE_LEFT_Pin, GPIO_PIN_SET);
 		    	  HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin, GPIO_PIN_SET);
@@ -963,13 +1129,14 @@ int main(void)
 	    	  }
 	    	  break;
 	      case 10:
+	    	  // follow the perimeter
 			  followPerimeter(NULL, true);
-			  message = "perimetro concluso!\n";
+			  message = "Perimeter concluded!\n";
 	    	  HAL_UART_Transmit(&huart6, (uint8_t*)message, strlen(message), HAL_MAX_DELAY);
 	    	  state = 11;
 	    	  break;
 	      case 11:
-	    	  //creo la mappa per scansionare il poligono
+	    	  // creation of the polygon map
 	    	  if(createNodes()){
 	    		  state = 12;
 	    	  }else{
@@ -977,8 +1144,8 @@ int main(void)
 	    	  }
 	    	  break;
 	      case 12:
-	    	  //scansiono l'area interna del poligono
-	    	  message = "scansione:\n";
+	    	  // scan the internal area
+	    	  message = "Scan:\n";
 	    	  HAL_UART_Transmit(&huart6, (uint8_t*)message, strlen(message), HAL_MAX_DELAY);
 
 	    	  current_position = zero;
@@ -991,11 +1158,9 @@ int main(void)
 	    	  state = 13;
 	    	  break;
 	      case 13:
-	    	  //in questo stato si cerca di andare al punto iniziale della scansione
-
+	    	  // find and go to the initial point to scan the entire polygon
     		  findNode(current_position, &startRow, &startColumn);
-    		  //cerco il primo punto dove andare per far partire la scansione
-    		  len = snprintf(buffer, sizeof(buffer), "Tracciato: (%d, %d) -> (%d, %d)\n", startColumn, startRow, scanColumns[0], scanRows[0]);
+    		  len = snprintf(buffer, sizeof(buffer), "Track: (%d, %d) -> (%d, %d)\n", startColumn, startRow, scanColumns[0], scanRows[0]);
     		  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
     		  Node* currentNode = NULL;
@@ -1004,23 +1169,21 @@ int main(void)
     		  }
 
     		  if(currentNode == NULL){
-    			  //se non trovo un percorso per arrivare al punto iniziale mi muovo sul bordo per arrivare a tale punto
-    			  len = snprintf(buffer, sizeof(buffer), "Nodo inarrivabile, percorso per: (%d, %d)\n", scanColumns[0], scanRows[0]);
+    			  // if don't find a path to the initial point, move using the perimeter to reach the point
+    			  len = snprintf(buffer, sizeof(buffer), "Unreachable node, path to: (%d, %d)\n", scanColumns[0], scanRows[0]);
     			  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
     			  Node* wallNode = findNearestWall(scanRows[0], scanColumns[0]);
 
     			  if(wallNode != NULL){
-    				  len = snprintf(buffer, sizeof(buffer), "vado a: (%d, %d)\n", wallNode->column, wallNode->row);
+    				  len = snprintf(buffer, sizeof(buffer), "going to (%d, %d)\n", wallNode->column, wallNode->row);
     				  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
-    				  //trovo le coordinate per il punto di riferimento
     				  double resultX, resultY = 0.0;
     				  if(findPositionOnSegment(wallNode->row, wallNode->column, &resultX, &resultY)){
-    					  len = snprintf(buffer, sizeof(buffer), "posizione: (%d, %d)\n", (int) round(resultX), (int) round(resultY));
+    					  len = snprintf(buffer, sizeof(buffer), "position: (%d, %d)\n", (int) round(resultX), (int) round(resultY));
     					  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
-    					  //fai partire la funzione per arrivare nel punto preciso seguendo il perimetro
     					  Point target = {round(resultX), round(resultY)};
 
     					  bool clockwise = false;
@@ -1030,17 +1193,16 @@ int main(void)
 
     			    	  moveToGoal(target);
     				  }else{
-    					  //fuori dal poligono, vai allo stato 0
-    					  message = "punto trovato fuori dal poligono, errore!\n";
+    					  message = "point found outside the polygon, error!\n";
     					  HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     					  state = 0;
     					  break;
     				  }
 
-    				  //a questo punto sono nel punto di entrata del poligono, vado verso il punto iniziale della scansione
+    				  //at this point I am at the entry point of the polygon, I go towards the starting point of the scan
     				  wallNode = wallNode->parent;
 
-    				  previousDir = -2; // Direzione iniziale inesistente
+    				  previousDir = -2; // Initial direction non-existent
 
     				  while (wallNode) {
     					  dir = wallNode->direction;
@@ -1054,42 +1216,40 @@ int main(void)
     				  index++;
 
     			  }else{
-    				  //non ho trovato un percorso per arrivare al punto iniziale, vai a stato 0
-    				  message = "non ho modo di entrare nel poligono, cambia poligono!\n";
+    				  //didn't find a path to get to the starting point, go to state 0
+    				  message = "I have no way to enter the range, change map!\n";
     				  HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
     				  state = 0;
     				  break;
     			  }
     		  }
-    		  //ho trovato un percorso per arrivare al punto iniziale, allora ci vado
+    		  //I found a path to get to the starting point, so I'll go there
     		  state = 14;
 	    	  break;
 	      case 14:
 	    	  switch (stateScan) {
 	    	  case STATE_NORMAL:
 	    		  if (currentNode == NULL) {
-	    			  // Trova il nodo di partenza
+	    			  // Find the starting node
 	    			  findNode(current_position, &startRow, &startColumn);
-	    			  // Cerca il primo punto per iniziare la scansione
+	    			  // Search for the first point to start the scan
 	    			  len = snprintf(buffer, sizeof(buffer),
-	    					  "Tracciato: (%d, %d) -> (%d, %d)\n",
+	    					  "Track: (%d, %d) -> (%d, %d)\n",
 							  startColumn, startRow, scanColumns[index], scanRows[index]);
 	    			  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
-	    			  // Trova il percorso più breve verso il punto di scansione
+	    			  // Find the shortest path to the scan point
 	        		  if(scanRows[index] != startRow || scanColumns[index] != startColumn){
 	        			  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index],startRow, startColumn);
 	        		  }
 	    		  }
 	    		  previousDir = -2;
-	    		  // Segui il percorso per il punto corrente
+	    		  // Follow the path to the current point
 	    		  while (currentNode) {
 	    			  dir = currentNode->direction;
-
-	    			  // Usa selectDirection() per muoversi
 	    			  selectDirection(previousDir, dir, currentNode);
 
-	    			  // Controlla se è stato rilevato un ostacolo
+	    			  // Check if an obstacle has been detected
 	    			  if (stateScan == STATE_OBSTACLE) {
 	    				  break;
 	    			  }
@@ -1099,41 +1259,41 @@ int main(void)
 	    		  }
 
 	    		  if (stateScan != STATE_OBSTACLE) {
-	    			  // Passa al punto successivo se non c'è ostacolo
+	    			  // Move to the next point if there is no obstacle
 	    			  index++;
 	    			  if (index == scanNumber) {
-	    				  // Scansione terminata, torna a casa
+	    				  // Scan finished, go home
 	    				  stateScan = STATE_FINISHED;
 	    			  }
 	    		  }
 	    		  break;
 	    	  case STATE_OBSTACLE:
-	    		  // Ricalcola il percorso con A*
+	    		  // Recalculate the route with A*
 	    		  findNode(current_position, &startRow, &startColumn);
 	    		  int obstacleRow = 0;
 	    		  int obstacleColumn = 0;
 
 	    		  if(previousDir == -2){
 	    			  if(dir == 0){
-	    				  //ho un ostacolo sopra di me
+	    				  //I have an obstacle above me
 	    				  nodes[startRow+1][startColumn].isObstacle = true;
 	    				  obstacleRow = startRow+1;
 	    				  obstacleColumn = startColumn;
 	    				  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index], startRow, startColumn);
 	    			  }else if(dir == 1){
-	    				  //ho un ostacolo sotto di me
+	    				  //I have an obstacle under me
 	    				  nodes[startRow-1][startColumn].isObstacle = true;
 	    				  obstacleRow = startRow-1;
 	    				  obstacleColumn = startColumn;
 	    				  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index], startRow, startColumn);
 	    			  }else if(dir == 2){
-	    				  //ho un ostacolo a destra
+	    				  //I have an obstacle on the right
 	    				  nodes[startRow][startColumn + 1].isObstacle = true;
 	    				  obstacleRow = startRow;
 	    				  obstacleColumn = startColumn+1;
 	    				  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index], startRow, startColumn);
 	    			  }else if(dir == 3){
-	    				  //ho un ostacolo a sinistra
+	    				  //I have an obstacle on the left
 	    				  nodes[startRow][startColumn - 1].isObstacle = true;
 	    				  obstacleRow = startRow;
 	    				  obstacleColumn = startColumn - 1;
@@ -1141,25 +1301,25 @@ int main(void)
 	    			  }
 	    		  }else{
 	    			  if(previousDir == 0){
-	    				  //ho un ostacolo sopra di me
+	    				  //I have an obstacle above me
 	    				  nodes[startRow+1][startColumn].isObstacle = true;
 	    				  obstacleRow = startRow+1;
 	    				  obstacleColumn = startColumn;
 	    				  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index], startRow, startColumn);
 	    			  }else if(previousDir == 1){
-	    				  //ho un ostacolo sotto di me
+	    				  //I have an obstacle under me
 	    				  nodes[startRow-1][startColumn].isObstacle = true;
 	    				  obstacleRow = startRow-1;
 	    				  obstacleColumn = startColumn;
 	    				  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index], startRow, startColumn);
 	    			  }else if(previousDir == 2){
-	    				  //ho un ostacolo a destra
+	    				  //I have an obstacle on the right
 	    				  nodes[startRow][startColumn + 1].isObstacle = true;
 	    				  obstacleRow = startRow;
 	    				  obstacleColumn = startColumn+1;
 	    				  currentNode = findShortestPathAStar(scanRows[index], scanColumns[index], startRow, startColumn);
 	    			  }else if(previousDir == 3){
-	    				  //ho un ostacolo a sinistra
+	    				  //I have an obstacle on the left
 	    				  nodes[startRow][startColumn - 1].isObstacle = true;
 	    				  obstacleRow = startRow;
 	    				  obstacleColumn = startColumn-1;
@@ -1167,20 +1327,18 @@ int main(void)
 	    			  }
 	    		  }
 
-				  len = snprintf(buffer, sizeof(buffer), "ora: (%d, %d), ostacolo: (%d, %d)\n", startColumn, startRow, obstacleColumn, obstacleRow);
+				  len = snprintf(buffer, sizeof(buffer), "position: (%d, %d), obstacle: (%d, %d)\n", startColumn, startRow, obstacleColumn, obstacleRow);
 				  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
-	    		  // Ritorna allo stato normale
 	    		  stateScan = STATE_NORMAL;
 	    		  break;
 
 	    	  case STATE_FINISHED:
-	    		  // Scansione completata
+	    		  // Scan completed
 	    		  state = 15;
 	    		  break;
 
 	    	  default:
-	    		  // Stato non riconosciuto (errore)
-	    		  len = snprintf(buffer, sizeof(buffer), "Errore: Stato non riconosciuto!\n");
+	    		  len = snprintf(buffer, sizeof(buffer), "Error: State not recognized!\n");
 	    		  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 	    		  break;
 	    	  }
@@ -1203,11 +1361,11 @@ int main(void)
 					  index_wall++;
 				  }
 
-				  previousDir = -2; // Direzione iniziale inesistente
+				  previousDir = -2; // insistent initial direction
 				  if(index_wall > 1){
 					  for(int i = index_wall-1; i>1; i--){
 						  toWall = results[i];
-						  len = snprintf(buffer, sizeof(buffer), "vado a: (%d, %d)\n", toWall->column, toWall->row);
+						  len = snprintf(buffer, sizeof(buffer), "going to: (%d, %d)\n", toWall->column, toWall->row);
 						  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
 						  dir = toWall->direction;
@@ -1223,16 +1381,15 @@ int main(void)
 
 				  toWall = results[0];
 
-				  //vado sul bordo del poligono ora
-				  len = snprintf(buffer, sizeof(buffer), "vado a: (%d, %d)\n", toWall->column, toWall->row);
+				  // going in the perimeter
+				  len = snprintf(buffer, sizeof(buffer), "going to: (%d, %d)\n", toWall->column, toWall->row);
 				  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 	    	  }else{
 	    		  toWall = &nodes[startRow][startColumn];
 	    	  }
-			  //trovo le coordinate per il punto di riferimento
 			  double resultX, resultY = 0.0;
 			  if(findPositionOnSegment(toWall->row, toWall->column, &resultX, &resultY)){
-				  len = snprintf(buffer, sizeof(buffer), "posizione: (%d, %d)\n", (int) round(resultX), (int) round(resultY));
+				  len = snprintf(buffer, sizeof(buffer), "poisition: (%d, %d)\n", (int) round(resultX), (int) round(resultY));
 				  HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
 				  //fai partire la funzione per arrivare nel punto preciso seguendo il perimetro
@@ -1240,18 +1397,18 @@ int main(void)
 				  moveToGoal(target);
 
 				  backHome();
-				  message = "arrivato a casa!\n";
+				  message = "back Home!\n";
 				  HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			  }else{
-				  //fuori dal poligono, vai allo stato 0
-				  message = "punto trovato fuori dal poligono, errore!\n";
+				  //outside the polygon, go to state 0
+				  message = "point found outside the polygon, error!\n";
 				  HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
 			  }
 			  freeNodes();
 			  state = 0;
 	    	  break;
 	      default:
-	          // codice da eseguire se nessun caso corrisponde
+	    	  // code to execute if no cases match
 	          break;
 	  }
   }
@@ -1390,9 +1547,9 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, ENABLE_RIGHT_Pin|ENABLE_LEFT_Pin, GPIO_PIN_RESET);
@@ -1410,6 +1567,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PB0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /*Configure GPIO pins : DIR_RIGHT_Pin DIR_LEFT_Pin STEP_RIGHT_Pin */
   GPIO_InitStruct.Pin = DIR_RIGHT_Pin|DIR_LEFT_Pin|STEP_RIGHT_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -1423,6 +1586,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(STEP_LEFT_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
