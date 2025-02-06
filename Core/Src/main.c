@@ -298,7 +298,7 @@ void Process_Received_String(char* str) {
     	if(load_polygon_from_flash()){
     		message = "Track in memory\n";
     		HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
-    		state = 11;
+    		state = 10;
     	}else{
     		message = "Track not in memory\n";
     		HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
@@ -387,7 +387,7 @@ void Process_Received_String(char* str) {
 
                 // Use angle and power as needed
                 len = snprintf(buffer, sizeof(buffer), "%d:%d;\n", angle, force);
-                HAL_UART_Transmit(&huart6, (uint8_t*)message, len, HAL_MAX_DELAY);
+                HAL_UART_Transmit(&huart6, (uint8_t*)buffer, len, HAL_MAX_DELAY);
 
                 Control_Motors(angle, force);
             } else {
@@ -1344,9 +1344,6 @@ int main(void)
 	    	  }
 	    	  break;
 	      case 15:
-	    	  createNodes();
-	    	  current_position.x = 0;
-	    	  current_position.y = 35000;
 	    	  findNode(current_position, &startRow, &startColumn);
 	    	  Node* toWall = NULL;
 	    	  if(!(startRow == rows-1 || startColumn == cols -1)){
@@ -1361,7 +1358,7 @@ int main(void)
 					  index_wall++;
 				  }
 
-				  previousDir = -2; // insistent initial direction
+				  previousDir = -2; // inesistent initial direction
 				  if(index_wall > 1){
 					  for(int i = index_wall-1; i>1; i--){
 						  toWall = results[i];

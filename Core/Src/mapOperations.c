@@ -782,7 +782,7 @@ Node* findShortestPathAStar(int8_t startRow, int8_t startColumn, int8_t goalRow,
             clearVisitedList(&visited);
 
             // Transmit success message over UART
-            mex = "Percorso trovato\n";
+            mex = "Path retrieved\n";
             HAL_UART_Transmit(&huart6, (uint8_t*)mex, strlen(mex), HAL_MAX_DELAY);
             return currentNode;
         }
@@ -821,7 +821,7 @@ Node* findShortestPathAStar(int8_t startRow, int8_t startColumn, int8_t goalRow,
     }
 
     // No path found, transmit failure message over UART
-    mex = "Percorso non trovato\n";
+    mex = "Path not retrieved\n";
     HAL_UART_Transmit(&huart6, (uint8_t*)mex, strlen(mex), HAL_MAX_DELAY);
 
     // Clear open set and visited list before returning NULL
@@ -874,7 +874,7 @@ Node* findNearestWall(int8_t startRow, int8_t startColumn) {
             clearVisitedList(&visited);
 
             // Transmit success message over UART
-            mex = "Percorso verso il bordo trovato\n";
+            mex = "Path retrieved to the wall\n";
             HAL_UART_Transmit(&huart6, (uint8_t*)mex, strlen(mex), HAL_MAX_DELAY);
             return currentNode;
         }
@@ -912,7 +912,7 @@ Node* findNearestWall(int8_t startRow, int8_t startColumn) {
     }
 
     // No boundary found, transmit failure message over UART
-    mex = "Percorso non trovato:\n";
+    mex = "Path not retrieved to the wall\n";
     HAL_UART_Transmit(&huart6, (uint8_t*)mex, strlen(mex), HAL_MAX_DELAY);
 
     // Clear open set and visited list before returning NULL
