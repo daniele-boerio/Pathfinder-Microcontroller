@@ -392,7 +392,7 @@ void Process_Received_String(char* str) {
                 Control_Motors(angle, force);
             } else {
                 message = "Mower still in motion, please wait for the process to complete\n";
-                HAL_UART_Transmit(&huart6, (uint8_t *)message, strlen(message), HAL_MAX_DELAY);
+                HAL_UART_Transmit(&huart6, (uint8_t *)buffer, strlen(message), HAL_MAX_DELAY);
             }
         } else {
             len = snprintf(buffer, sizeof(buffer), "Not valid: %s", str);
